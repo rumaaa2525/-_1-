@@ -1,10 +1,14 @@
 import os
 import smtplib
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 import FinanceDataReader as fdr
 import pandas as pd
+
+
+CSV_PATH = "electronic_equipment_multi.csv"
 
 
 def collect_and_validate_stocks():
@@ -30,7 +34,9 @@ def collect_and_validate_stocks():
             df = fdr.DataReader(code, "2026-01-01")
 
             if len(df) < 2:
-                raise ValueError("등락률 계산에 필요한 데이터가 2일 미만입니다.")
+                raise ValueError(
+                    "등락률 계산에 필요한 데이터가 2일 미만입니다."
+                )
 
             latest_day = df.iloc[-1]
             prev_day = df.iloc[-2]
@@ -42,7 +48,9 @@ def collect_and_validate_stocks():
                 raise ValueError("종가에 결측치가 있습니다.")
 
             if previous_close == 0:
-                raise ValueError("이전 종가가 0이라 등락률을 계산할 수 없습니다.")
+                raise ValueError(
+                    "이전 종가가 0이라 등락률을 계산할 수 없습니다."
+                )
 
             price = int(current_close)
             change = round(
@@ -69,10 +77,11 @@ def collect_and_validate_stocks():
         "등락률(%)",
         "상승여부",
     ]
+
     df_result = pd.DataFrame(data_list, columns=columns)
 
     df_result.to_csv(
-        "electronic_equipment_multi.csv",
+        CSV_PATH,
         index=False,
         encoding="utf-8-sig",
     )
@@ -83,7 +92,8 @@ def collect_and_validate_stocks():
 
     if actual_count != expected_count:
         errors.append(
-            f"수집 건수 불일치: 기대({expected_count}) != 실제({actual_count})"
+            f"수집 건수 불일치: 기대({expected_count}) "
+            f"!= 실제({actual_count})"
         )
 
     missing_count = int(df_result.isnull().sum().sum())
@@ -94,6 +104,7 @@ def collect_and_validate_stocks():
         invalid_changes = df_result[
             df_result["등락률(%)"].abs() > 30
         ]
+
         if not invalid_changes.empty:
             errors.append("가격제한폭(±30%) 초과 종목 발견")
 
@@ -115,14 +126,21 @@ if __name__ == "__main__":
 
     print("=== 데이터 수집 및 검증 결과 ===")
     print(result_msg)
+    print(f"[CSV 생성 완료] {CSV_PATH}")
 
     # 메일 발송
     try:
-        EMAIL_SENDER = os.environ.get("MY_EMAIL_SENDER", "").strip()
-        EMAIL_RECEIVER = os.environ.get("MY_EMAIL_RECEIVER", "").strip()
-        EMAIL_PASSWORD = os.environ.get("MY_EMAIL_PW", "").strip()
+        EMAIL_SENDER = os.environ.get(
+            "MY_EMAIL_SENDER", ""
+        ).strip()
+        EMAIL_RECEIVER = os.environ.get(
+            "MY_EMAIL_RECEIVER", ""
+        ).strip()
+        EMAIL_PASSWORD = os.environ.get(
+            "MY_EMAIL_PW", ""
+        ).strip()
 
-        # 환경변수 누락 확인 — 비밀번호 값은 출력하지 않습니다.
+        # 설정 누락 확인 — 비밀번호 값은 출력하지 않습니다.
         missing_settings = [
             name
             for name, value in [
@@ -138,25 +156,55 @@ if __name__ == "__main__":
                 "메일 설정 누락: " + ", ".join(missing_settings)
             )
 
+        # 메일 기본 정보
         msg = MIMEMultipart()
         msg["From"] = EMAIL_SENDER
         msg["To"] = EMAIL_RECEIVER
-        msg["Subject"] = f"주식 데이터 수집 검증 보고 - {result_msg}"
+        msg["Subject"] = (
+            f"주식 데이터 수집 검증 보고 - {result_msg}"
+        )
 
         if has_error:
-            update_message = "일부 데이터 수집 또는 검증에 문제가 있습니다."
+            update_message = (
+                "일부 데이터 수집 또는 검증에 문제가 있습니다.\n"
+                "첨부파일에는 수집에 성공한 종목의 데이터가 들어 있습니다."
+            )
         else:
-            update_message = "종목 데이터가 정상적으로 갱신되었습니다."
+            update_message = (
+                "종목 데이터가 정상적으로 갱신되었습니다."
+            )
 
+        # 메일 본문
         body = (
             "안녕하세요, 오늘의 주식 크롤링 및 검증 결과입니다.\n\n"
             f"상태: {result_msg}\n\n"
-            f"{update_message}"
+            f"{update_message}\n\n"
+            f"첨부파일: {CSV_PATH}\n"
+            "첨부된 CSV 파일을 내려받아 엑셀에서 확인해주세요.\n\n"
+            "※ 현재가는 실시간 시세가 아니라 "
+            "수집된 가장 최근 거래일의 종가입니다."
         )
+
         msg.attach(MIMEText(body, "plain", "utf-8"))
 
+        # CSV 파일 첨부
+        with open(CSV_PATH, "rb") as file:
+            attachment = MIMEApplication(
+                file.read(),
+                _subtype="csv",
+            )
+
+        attachment.add_header(
+            "Content-Disposition",
+            "attachment",
+            filename=CSV_PATH,
+        )
+        msg.attach(attachment)
+
+        print(f"[메일] CSV 첨부 완료: {CSV_PATH}")
         print("[메일] 네이버 SMTP 서버에 연결합니다.")
 
+        # 네이버 SMTP 로그인 및 발송
         with smtplib.SMTP_SSL(
             "smtp.naver.com",
             465,
@@ -172,7 +220,18 @@ if __name__ == "__main__":
             )
 
             if refused:
-                raise RuntimeError("수신 주소가 서버에서 거부되었습니다.")
+                raise RuntimeError(
+                    "수신 주소가 서버에서 거부되었습니다."
+                )
+
+        print(
+            "[메일 발송 성공] 서버가 CSV 첨부 메일의 "
+            "발송 요청을 수락했습니다."
+        )
+
+    except Exception as e:
+        print(f"[메일 발송 실패] 사유: {e}")
+        raise
 
         print("[메일 발송 성공] 서버가 메일 발송 요청을 수락했습니다.")
 

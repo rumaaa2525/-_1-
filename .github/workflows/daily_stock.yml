@@ -3,7 +3,7 @@ name: daily-stock
 on:
   schedule:
     - cron: '0 23 * * 0-4'   # 한국시간 월~금 오전 08:00
-  workflow_dispatch:         # 수동 실행 버튼
+  workflow_dispatch:
 
 jobs:
   run:
@@ -25,4 +25,5 @@ jobs:
         with:
           name: stock-csv
           path: electronic_equipment_multi.csv
+
 

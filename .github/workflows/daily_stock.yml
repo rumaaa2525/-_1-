@@ -1,9 +1,9 @@
-name: daily-stock
+name: daily_stock
 
 on:
-schedule:
-  - cron: '0 23 * * *'   # 한국시간 매일 오전 08:00 주말, 공휴일 포함
-  workflow_dispatch:         # 수동 실행 버튼
+  schedule:
+    - cron: '0 23 * * *'   # 한국시간 매일 오전 08:00
+  workflow_dispatch:
 
 jobs:
   run:
@@ -22,7 +22,6 @@ jobs:
           MY_EMAIL_SENDER: ${{ secrets.MY_EMAIL_SENDER }}
           MY_EMAIL_RECEIVER: ${{ secrets.MY_EMAIL_RECEIVER }}
           MY_EMAIL_PW: ${{ secrets.MY_EMAIL_PW }}
-
 
       - uses: actions/upload-artifact@v4
         with:

@@ -2,7 +2,7 @@ name: daily-stock
 
 on:
 schedule:
-  - cron: '0 23 * * *'   # 한국시간 월~금 오전 08:00
+  - cron: '0 23 * * *'   # 한국시간 매일 오전 08:00 주말, 공휴일 포함
   workflow_dispatch:         # 수동 실행 버튼
 
 jobs:

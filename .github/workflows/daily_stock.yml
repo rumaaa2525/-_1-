@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt
-      - run: python test.py
+      - run: stock_validator.py
         env:
           MY_EMAIL_PW: ${{ secrets.MY_EMAIL_PW }}
       - uses: actions/upload-artifact@v4

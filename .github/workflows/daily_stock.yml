@@ -19,7 +19,10 @@ jobs:
 
       - run: python stock_validator.py
         env:
+          MY_EMAIL_SENDER: ${{ secrets.MY_EMAIL_SENDER }}
+          MY_EMAIL_RECEIVER: ${{ secrets.MY_EMAIL_RECEIVER }}
           MY_EMAIL_PW: ${{ secrets.MY_EMAIL_PW }}
+
 
       - uses: actions/upload-artifact@v4
         with:

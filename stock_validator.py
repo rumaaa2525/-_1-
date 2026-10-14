@@ -15,8 +15,8 @@ from bs4 import BeautifulSoup
 # 1. 결과 저장 파일명
 CSV_PATH = "electronic_equipment_full_data.csv"
 
-# 2. 업종 코드 (네이버 증권 페이지의 groupCode 확인 후 수정 필수!)
-TARGET_GROUP_CODE = '0001' 
+# 2. 업종 코드 (사용자님이 제공해주신 전자장비와기기 코드 282 반영 완료)
+TARGET_GROUP_CODE = '282' 
 
 # 3. 이메일 설정 (GitHub Secrets에 등록하여 사용하는 것을 권장)
 SMTP_SERVER = "smtp.gmail.com"
@@ -66,7 +66,6 @@ def get_financial_indicators(code):
         res.encoding = 'euc-kr'
         soup = BeautifulSoup(res.text, 'html.parser')
 
-        # 1. 주요 지표 테이블 추출 (시가총액, PER, PBR, EPS, BPS, 배당수익률, 주당배당금)
         summary_table = soup.select_one('table.type2.summary')
         if summary_table:
             rows = summary_table.select('tr')
@@ -83,7 +82,6 @@ def get_financial_indicators(code):
                     elif '배당수익률' in label: indicators["배당수익률"] = value
                     elif '주당배당금' in label: indicators["주당 배당금"] = value
 
-        # 2. 외국인보유비율 (외인소진율)
         foreign_th = soup.find('th', text='외국인보유비율')
         if foreign_th:
             indicators["외인소진율"] = foreign_th.find_next_sibling('td').text.strip()
@@ -104,31 +102,32 @@ def send_email(file_path, success, fail, error_list):
     msg['To'] = RECIPIENT_EMAIL
     msg['Subject'] = f"[주식 보고서] {datetime.now().strftime('%Y-%m-%d')} 업종 데이터 수집 결과"
 
-    # --- [메일 본문 구성] ---
-    body_text = f"""
-    안녕하세요, 자동 수집 시스템입니다.
-    
-    금일 주식 데이터 수집 결과 보고드립니다.
-
-    [수집 요약]
-    - 수집 일자: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-    - 총 대상 종목: {success + fail}개
-    - 수집 성공: {success}개
-    - 수집 실패: {fail}개
-
-    [상세 오류 내역]
-    """
-    
+    # --- [메일 본문 구성 - 문법 오류 완벽 수정] ---
+    error_detail = ""
     if error_list:
-        for err in error_list[:10]:  # 너무 길어지지 않게 상위 10개만 표시
-            body_text += f"- {err}\n"
+        error_detail = "\n".join([f"- {err}" for err in error_list[:10]])
         if len(error_list) > 10:
-            body_text += f"... 외 {len(error_list)-10}건\n"
+            error_detail += f"\n... 외 {len(error_list)-10}건"
     else:
-        body_text += "없음\n"
+        error_detail = "없음"
 
-    body_text += "\n상세 데이터는 첨부된 CSV 파일을 확인해 주세요.
-    """
+    # 세 개의 따옴표(""")를 사용하여 줄바꿈 에러를 방지합니다.
+    body_text = f"""
+안녕하세요, 자동 수집 시스템입니다.
+
+금일 주식 데이터 수집 결과 보고드립니다.
+
+[수집 요약]
+- 수집 일자: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+- 총 대상 종목: {success + fail}개
+- 수집 성공: {success}개
+- 수집 실패: {fail}개
+
+[상세 오류 내역]
+{error_detail}
+
+상세 데이터는 첨부된 CSV 파일을 확인해 주세요.
+"""
     msg.attach(MIMEText(body_text, 'plain'))
 
     # --- [첨부파일 추가] ---
@@ -153,7 +152,6 @@ def collect_and_validate_stocks():
     today_str = datetime.now().strftime('%Y-%m-%d')
     print(f"[{today_str}] 데이터 수집 프로세스 시작")
 
-    # 1. 업종 종목 리스트 확보
     stocks = get_naver_group_stocks(TARGET_GROUP_CODE)
     if not stocks:
         print("업종 종목을 찾을 수 없습니다.")
@@ -162,25 +160,20 @@ def collect_and_validate_stocks():
     data_list = []
     errors = []
 
-    # 2. 종목별 반복 수집
     for item in stocks:
         name = item["name"]
         code = str(item["code"]).zfill(6)
         print(f"진행 중: {name}({code})")
 
         try:
-            # A. 시세 데이터 수집 (FinanceDataReader)
             df = fdr.DataReader(code, "2025-01-01")
             if len(df) < 2:
                 raise ValueError("데이터 부족")
 
             latest = df.iloc[-1]
             prev = df.iloc[-2]
-
-            # B. 재무 지표 크롤링
             ind = get_financial_indicators(code)
 
-            # C. 데이터 병합 (요청하신 모든 변수 적용)
             data_list.append({
                 "수집 날짜": today_str,
                 "종목코드": code,
@@ -204,12 +197,11 @@ def collect_and_validate_stocks():
                 "배당수익률": ind["배당수익률"],
                 "주당 배당금": ind["주당 배당금"]
             })
-            time.sleep(0.4) # 네이버 차단 방지
+            time.sleep(0.4)
 
         except Exception as e:
             errors.append(f"{name}({code}): {e}")
 
-    # 3. 결과 저장 및 메일 발송
     success_count = len(data_list)
     fail_count = len(errors)
 
@@ -218,7 +210,6 @@ def collect_and_validate_stocks():
         df_final.to_csv(CSV_PATH, index=False, encoding='utf-8-sig')
         print(f"✅ {success_count}개 종목 저장 완료.")
     
-    # 성공/실패 여부와 관계없이 결과 리포트를 메일로 보냄
     send_email(CSV_PATH, success_count, fail_count, errors)
 
 if __name__ == "__main__":

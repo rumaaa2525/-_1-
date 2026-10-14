@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 # 1. 결과 저장 파일명
 CSV_PATH = "electronic_equipment_full_data.csv"
 
-# 2. 업종 코드 (사용자님이 제공해주신 전자장비와기기 코드 282 반영 완료)
+# 2. 업종 코드 (전자장비와기기: 282 반영 완료)
 TARGET_GROUP_CODE = '282' 
 
 # 3. 이메일 설정 (GitHub Secrets에 등록하여 사용하는 것을 권장)
@@ -51,7 +51,7 @@ def get_naver_group_stocks(group_code):
         return []
 
 def get_financial_indicators(code):
-    """네이버 종목 상세 페이지에서 재무 지표(PER, PBR, 배당 등)를 크롤링"""
+    """네이버 종목 상세 페이지에서 재무 지표 크롤링"""
     url = f"https://finance.naver.com/item/main.naver?code={code}"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
     
@@ -85,7 +85,6 @@ def get_financial_indicators(code):
         foreign_th = soup.find('th', text='외국인보유비율')
         if foreign_th:
             indicators["외인소진율"] = foreign_th.find_next_sibling('td').text.strip()
-
     except Exception as e:
         print(f"  [!] 상세지표 크롤링 오류({code}): {e}")
     
@@ -94,15 +93,15 @@ def get_financial_indicators(code):
 def send_email(file_path, success, fail, error_list):
     """수집 결과 요약을 포함하여 이메일 전송"""
     if not EMAIL_USER or not EMAIL_PASS:
-        print("이메일 설정이 되어 있지 않아 전송을 건너뜁니다.")
+        print("이메일 설정이 되어 있지 않아 전송을 건너뜜.")
         return
 
     msg = MIMEMultipart()
     msg['From'] = EMAIL_USER
     msg['To'] = RECIPIENT_EMAIL
-    msg['Subject'] = f"[주식 보고서] {datetime.now().strftime('%Y-%m-%d')} 업종 데이터 수집 결과"
+    msg['Subject'] = f"[주식 보고서] {datetime.now().strftime('%Y-%m-%d')} 수집 결과"
 
-    # --- [메일 본문 구성 - 문법 오류 완벽 수정] ---
+    # --- [메일 본문 구성 - 가장 안전한 방식] ---
     error_detail = ""
     if error_list:
         error_detail = "\n".join([f"- {err}" for err in error_list[:10]])
@@ -111,23 +110,18 @@ def send_email(file_path, success, fail, error_list):
     else:
         error_detail = "없음"
 
-    # 세 개의 따옴표(""")를 사용하여 줄바꿈 에러를 방지합니다.
-    body_text = f"""
-안녕하세요, 자동 수집 시스템입니다.
-
-금일 주식 데이터 수집 결과 보고드립니다.
-
-[수집 요약]
-- 수집 일자: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-- 총 대상 종목: {success + fail}개
-- 수집 성공: {success}개
-- 수집 실패: {fail}개
-
-[상세 오류 내역]
-{error_detail}
-
-상세 데이터는 첨부된 CSV 파일을 확인해 주세요.
-"""
+    body_text = (
+        f"안녕하세요, 자동 수집 시스템입니다.\n\n"
+        f"금일 주식 데이터 수집 결과 보고드립니다.\n\n"
+        f"[수집 요약]\n"
+        f"- 수집 일자: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"- 총 대상 종목: {success + fail}개\n"
+        f"- 수집 성공: {success}개\n"
+        f"- 수집 실패: {fail}개\n\n"
+        f"[상세 오류 내역]\n"
+        f"{error_detail}\n\n"
+        f"상세 데이터는 첨부된 CSV 파일을 확인해 주세요."
+    )
     msg.attach(MIMEText(body_text, 'plain'))
 
     # --- [첨부파일 추가] ---
@@ -211,11 +205,6 @@ def collect_and_validate_stocks():
         print(f"✅ {success_count}개 종목 저장 완료.")
     
     send_email(CSV_PATH, success_count, fail_count, errors)
-    
+
 if __name__ == "__main__":
     collect_and_validate_stocks()
-    print("[메일 발송 성공] 서버가 메일 발송 요청을 수락했습니다.")
-
-    except Exception as e:
-        print(f"[메일 발송 실패] 사유: {e}")
-        raise

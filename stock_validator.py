@@ -214,8 +214,7 @@ def collect_and_validate_stocks():
     
 if __name__ == "__main__":
     collect_and_validate_stocks()
-
-        print("[메일 발송 성공] 서버가 메일 발송 요청을 수락했습니다.")
+    print("[메일 발송 성공] 서버가 메일 발송 요청을 수락했습니다.")
 
     except Exception as e:
         print(f"[메일 발송 실패] 사유: {e}")

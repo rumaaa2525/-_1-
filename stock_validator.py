@@ -1,6 +1,7 @@
 import os
 import smtplib
 import time
+import ssl
 from datetime import datetime
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
@@ -18,12 +19,12 @@ CSV_PATH = "electronic_equipment_full_data.csv"
 # 2. 업종 코드 (전자장비와기기: 282 반영 완료)
 TARGET_GROUP_CODE = '282' 
 
-# 3. 이메일 설정 (GitHub Secrets에 등록하여 사용하는 것을 권장)
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
-EMAIL_USER = os.environ.get("EMAIL_USER", "your_email@gmail.com")
-EMAIL_PASS = os.environ.get("EMAIL_PASS", "your_password")
-RECIPIENT_EMAIL = os.environ.get("RECIPIENT_EMAIL", "receiver@gmail.com")
+# 3. 이메일 설정 (네이버 SMTP 설정 적용)
+SMTP_SERVER = "smtp.naver.com"
+SMTP_PORT = 465  # 네이버는 SSL(465) 포트를 사용합니다.
+EMAIL_USER = os.environ.get("EMAIL_USER", "your_naver@naver.com")
+EMAIL_PASS = os.environ.get("EMAIL_PASS", "your_app_password")
+RECIPIENT_EMAIL = os.environ.get("RECIPIENT_EMAIL", "receiver@naver.com")
 
 # --- [기능 함수 영역] ---
 
@@ -91,7 +92,7 @@ def get_financial_indicators(code):
     return indicators
 
 def send_email(file_path, success, fail, error_list):
-    """수집 결과 요약을 포함하여 이메일 전송"""
+    """수집 결과 요약을 포함하여 이메일 전송 (네이버 SSL 방식 적용)"""
     if not EMAIL_USER or not EMAIL_PASS:
         print("이메일 설정이 되어 있지 않아 전송을 건너뜜.")
         return
@@ -101,7 +102,7 @@ def send_email(file_path, success, fail, error_list):
     msg['To'] = RECIPIENT_EMAIL
     msg['Subject'] = f"[주식 보고서] {datetime.now().strftime('%Y-%m-%d')} 수집 결과"
 
-    # --- [메일 본문 구성 - 가장 안전한 방식] ---
+    # --- [메일 본문 구성] ---
     error_detail = ""
     if error_list:
         error_detail = "\n".join([f"- {err}" for err in error_list[:10]])
@@ -132,11 +133,12 @@ def send_email(file_path, success, fail, error_list):
                 part.add_header('Content-Disposition', 'attachment', filename=os.path.basename(file_path))
                 msg.attach(part)
 
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(EMAIL_USER, EMAIL_PASS)
-        server.sendmail(EMAIL_USER, RECIPIENT_EMAIL, msg.as_string())
-        server.quit()
+        # 네이버 SMTP (SSL) 연결 방식
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, context=context) as server:
+            server.login(EMAIL_USER, EMAIL_PASS)
+            server.sendmail(EMAIL_USER, RECIPIENT_EMAIL, msg.as_string())
+        
         print("📧 이메일 전송 성공!")
     except Exception as e:
         print(f"📧 이메일 전송 실패: {e}")

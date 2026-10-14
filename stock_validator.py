@@ -211,7 +211,7 @@ def collect_and_validate_stocks():
         print(f"✅ {success_count}개 종목 저장 완료.")
     
     send_email(CSV_PATH, success_count, fail_count, errors)
-
+    
 if __name__ == "__main__":
     collect_and_validate_stocks()
 

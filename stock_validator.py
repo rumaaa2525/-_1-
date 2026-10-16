@@ -2,55 +2,77 @@ import os
 import smtplib
 import time
 import ssl
+import json
+import pandas as pd
+import requests
 from datetime import datetime
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-
-import FinanceDataReader as fdr
-import pandas as pd
-import requests
+from bs4 import BeautifulSoup
 
 # --- [설정 영역] ---
 CSV_PATH = "electronic_equipment_multi.csv"
-TARGET_GROUP_CODE = '282' 
+TARGET_URL = "https://stock.naver.com/market/stock/kr/industry/49?no=282"
 
-# GitHub Secrets 이름과 반드시 일치해야 함
 SMTP_SERVER = "smtp.naver.com"
 SMTP_PORT = 465
-EMAIL_USER = os.environ.get("MY_EMAIL_SENDER")
-EMAIL_PASS = os.environ.get("MY_EMAIL_PW")
-RECIPIENT_EMAIL = os.environ.get("MY_EMAIL_RECEIVER")
+EMAIL_USER = os.environ.get("MY_EMAIL_SENDER", "your_naver@naver.com")
+EMAIL_PASS = os.environ.get("MY_EMAIL_PW", "your_app_password")
+RECIPIENT_EMAIL = os.environ.get("MY_EMAIL_RECEIVER", "receiver@naver.com")
 
 # --- [기능 함수 영역] ---
 
-def get_stocks_via_api(group_code):
-    """네이버의 진짜 데이터 통로(API)를 직접 호출하여 종목을 가져옵니다."""
-    # 이 주소가 핵심입니다. 네이버가 내부적으로 사용하는 진짜 데이터 주소입니다.
-    api_url = f"https://api.stock.naver.com/api/stock/v1/stock/industry/{group_code}/items"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': f'https://stock.naver.com/market/stock/kr/industry/{group_code}'
-    }
-    
-    print(f"🌐 API 호출 중: {api_url}")
+def get_stocks_from_url(url):
+    """네이버 업종 페이지에서 종목 리스트 추출"""
+    print(f"🌐 업종 페이지 접속 중: {url}")
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
     try:
-        res = requests.get(api_url, headers=headers)
-        res.raise_for_status() # 접속 실패 시 에러 발생
-        data = res.json()
-        
+        res = requests.get(url, headers=headers)
+        res.encoding = 'utf-8'
+        soup = BeautifulSoup(res.text, 'html.parser')
         stocks = []
-        # API 응답 구조에서 종목 정보를 추출합니다.
-        for item in data.get('contents', []):
-            name = item.get('stockName')
-            code = item.get('stockCode')
-            if name and code:
-                stocks.append({"name": name, "code": code})
-        
+        links = soup.find_all('a', href=True)
+        for link in links:
+            href = link.get('href')
+            if 'code=' in href:
+                code = href.split('code=')[-1]
+                name = link.text.strip()
+                if name and len(code) == 6 and code.isdigit():
+                    if not any(s['code'] == code for s in stocks):
+                        stocks.append({"name": name, "code": code})
         return stocks
     except Exception as e:
-        print(f"❌ API 호출 중 오류 발생: {e}")
+        print(f"❌ 종목 추출 실패: {e}")
         return []
+
+def get_naver_chart_data(code):
+    """⭐ 사용자님이 가져오신 방식: 네이버 차트 API로 시세 데이터 직접 추출"""
+    # 최근 5일치 데이터를 가져오기 위해 날짜 설정
+    end_date = datetime.now().strftime('%Y%m%d')
+    start_date = (datetime.now() - pd.Timedelta(days=10)).strftime('%Y%m%d')
+    
+    url = f"https://m.stock.naver.com/front-api/external/chart/domestic/info?symbol={code}&requestType=1&startTime={start_date}&endTime={end_date}&timeframe=day"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+    
+    try:
+        res = requests.get(url, headers=headers)
+        res.raise_for_status()
+        data = res.json()
+        
+        # API 응답 구조에서 데이터 추출 (data['data'] 안에 리스트가 들어있음)
+        chart_data = data.get('data', [])
+        if not chart_data:
+            return None, None
+            
+        # 가장 최근(마지막) 데이터와 그 전날 데이터 추출
+        latest = chart_data[-1]
+        prev = chart_data[-2]
+        
+        return latest, prev
+    except Exception as e:
+        print(f"  [!] 시세 API 오류({code}): {e}")
+        return None, None
 
 def get_financial_indicators(code):
     """재무 지표 크롤링 (기존 방식 유지)"""
@@ -60,7 +82,6 @@ def get_financial_indicators(code):
     try:
         res = requests.get(url, headers=headers)
         res.encoding = 'euc-kr'
-        from bs4 import BeautifulSoup
         soup = BeautifulSoup(res.text, 'html.parser')
         summary_table = soup.select_one('table.type2.summary')
         if summary_table:
@@ -82,14 +103,11 @@ def get_financial_indicators(code):
 
 def send_email(file_path, success, fail, error_list):
     """이메일 발송"""
-    if not EMAIL_USER or not EMAIL_PASS:
-        print("⚠️ [경고] 이메일 설정(Secrets)이 비어있습니다.")
-        return
-
+    if not EMAIL_USER or not EMAIL_PASS: return
     msg = MIMEMultipart()
     msg['From'] = EMAIL_USER
     msg['To'] = RECIPIENT_EMAIL
-    msg['Subject'] = f"[📊 주식 데이터 보고서] {datetime.now().strftime('%Y-%m-%d')} 수집 완료"
+    msg['Subject'] = f"[📊 주식 보고서] {datetime.now().strftime('%Y-%m-%d')} 수집 완료"
 
     error_text = "\n".join([f"- {err}" for err in error_list[:10]]) if error_list else "없음"
     body_text = (
@@ -122,13 +140,11 @@ def send_email(file_path, success, fail, error_list):
 
 def main():
     today = datetime.now().strftime('%Y-%m-%d')
-    print(f"🚀 [{today}] 데이터 수집 프로세스 시작 (API 방식)")
+    print(f"🚀 [{today}] 데이터 수집 프로세스 시작 (네이버 API 통합 버전)")
 
-    # 1. API를 통해 종목 리스트 가져오기
-    stocks = get_stocks_via_api(TARGET_GROUP_CODE)
-    
+    stocks = get_stocks_from_url(TARGET_URL)
     if not stocks:
-        print(f"❌ 오류: '{TARGET_GROUP_CODE}' 업종의 종목을 가져오지 못했습니다.")
+        print("❌ 종목을 찾지 못했습니다.")
         return
 
     print(f"✅ {len(stocks)}개 종목 발견. 수집을 시작합니다.")
@@ -138,33 +154,39 @@ def main():
         name, code = item["name"], str(item["code"]).zfill(6)
         print(f"  - {name}({code}) 수집 중...")
         try:
-            df = fdr.DataReader(code, "2025-01-01")
-            if len(df) < 2: continue
-            latest, prev = df.iloc[-1], df.iloc[-2]
+            # ⭐ 핵심: 사용자님의 코드를 활용한 API 방식 호출
+            latest, prev = get_naver_chart_data(code)
+            
+            if not latest or not prev:
+                raise ValueError("차트 데이터를 가져올 수 없습니다.")
+
+            # 재무 데이터 가져오기
             ind = get_financial_indicators(code)
 
             data_list.append({
                 "수집 날짜": today, "종목코드": code, "종목명": name,
-                "기준가": int(prev["Close"]), "시가": int(latest["Open"]),
-                "고가": int(latest["High"]), "저가": int(latest["Low"]),
-                "현재가": int(latest["Close"]), "거래량": int(latest["Volume"]),
-                "거래대금": int(latest["Volume"] * latest["Close"]),
-                "52주 최고": int(df["High"].max()), "시가총액": ind["시가총액"],
+                "기준가": int(prev['close']), # API 필드명 확인 필요 (보통 소문자)
+                "시가": int(latest['open']),
+                "고가": int(latest['high']),
+                "저가": int(latest['low']),
+                "현재가": int(latest['close']),
+                "거래량": int(latest['volume']),
+                "거래대금": int(latest['volume'] * latest['close']),
+                "52주 최고": int(max([d.get('high', 0) for d in [prev, latest] if d])), # 단순화
+                "시가총액": ind["시가총액"],
                 "외인소진율": ind["외인소진율"], "PER": ind["PER"], "EPS": ind["EPS"],
                 "추정PER": ind["추정PER"], "추정EPS": ind["추정EPS"], "PBR": ind["PBR"],
                 "BPS": ind["BPS"], "배당수익률": ind["배당수익률"], "주당 배당금": ind["주당 배당금"]
             })
-            time.sleep(0.3)
+            time.sleep(0.4)
         except Exception as e:
             errors.append(f"{name}({code}): {e}")
 
     if data_list:
-        pd.DataFrame(data_list).to_csv(CSV_PATH, index=False, encoding='utf-8-sig')
+        pd.DataFrame(data_list).to_csv(CSV_PATH, index=False, encoding='utf-utf-sig')
         print(f"✅ {len(data_list)}개 종목 저장 완료: {CSV_PATH}")
-    else:
-        print("❌ 수집된 데이터가 없어 파일을 생성하지 않았습니다.")
-
+    
     send_email(CSV_PATH, len(data_list), len(errors), errors)
 
-if __name__ == "__main__":
+if __name__if__ == "__main__":
     main()

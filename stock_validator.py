@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 
 # --- [설정 영역] ---
 # 1. 결과 저장 파일명
-CSV_PATH = "electronic_equipment_full_data.csv"
+CSV_PATH = "electronic_equipment_multi.csv"
 
 # 2. 업종 코드 (전자장비와기기: 282 반영 완료)
 TARGET_GROUP_CODE = '282' 

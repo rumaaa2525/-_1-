@@ -10,58 +10,55 @@ from email.mime.text import MIMEText
 import FinanceDataReader as fdr
 import pandas as pd
 import requests
+from bs4 import BeautifulSoup
 
 # --- [설정 영역] ---
+# GitHub Actions의 upload-artifact 설정에 맞춰 파일명을 정확히 일치시켰습니다.
 CSV_PATH = "electronic_equipment_multi.csv"
 
-# 사용자님이 주신 주소의 핵심 번호 (no=282)
+# 업종 코드 (전자장비와기기: 282)
 TARGET_GROUP_CODE = '282' 
 
+# [중요] 사용자님의 .yml 파일에 적힌 환경 변수 이름과 100% 일치시켰습니다.
 SMTP_SERVER = "smtp.naver.com"
 SMTP_PORT = 465
-EMAIL_USER = os.environ.get("EMAIL_USER", "your_naver@naver.com")
-EMAIL_PASS = os.environ.get("EMAIL_PASS", "your_app_password")
-RECIPIENT_EMAIL = os.environ.get("RECIPIENT_EMAIL", "receiver@naver.com")
+EMAIL_USER = os.environ.get("MY_EMAIL_SENDER")    # yml의 MY_EMAIL_SENDER와 매칭
+EMAIL_PASS = os.environ.get("MY_EMAIL_PW")        # yml의 MY_EMAIL_PW와 매칭
+RECIPIENT_EMAIL = os.environ.get("MY_EMAIL_RECEIVER") # yml의 MY_EMAIL_RECEIVER와 매칭
 
 # --- [기능 함수 영역] ---
 
-def get_stocks_via_api(group_code):
-    """네이버의 진짜 데이터 통로(API)를 통해 종목 리스트를 가져옵니다."""
-    print(f"🌐 네이버 데이터 통로 접속 시도 (코드: {group_code})")
-    # 새로운 네이버 주소 체계에 맞는 API 주소입니다.
-    url = f"https://api.stock.naver.com/api/stock/v1/stock/industry/{group_code}/items"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://stock.naver.com/'
-    }
-    
+def get_stocks_from_url(url):
+    """네이버 API를 통해 종목 리스트 추출"""
+    print(f"🌐 주소 접속 중: {url}")
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
     try:
         res = requests.get(url, headers=headers)
-        res.raise_for_status() # 접속 실패 시 에러 발생
-        data = res.json()
-        
+        res.encoding = 'utf-8'
+        soup = BeautifulSoup(res.text, 'html.parser')
         stocks = []
-        # API 응답에서 종목 이름과 코드를 추출합니다.
-        for item in data.get('contents', []):
-            stocks.append({
-                "name": item.get('stockName'),
-                "code": item.get('stockCode')
-            })
+        links = soup.find_all('a', href=True)
+        for link in links:
+            href = link.get('href')
+            if 'code=' in href:
+                code = href.split('code=')[-1]
+                name = link.text.strip()
+                if name and len(code) == 6 and code.isdigit():
+                    if not any(s['code'] == code for s in stocks):
+                        stocks.append({"name": name, "code": code})
         return stocks
     except Exception as e:
-        print(f"❌ API 접속 실패: {e}")
+        print(f"❌ 종목 추출 실패: {e}")
         return []
 
 def get_financial_indicators(code):
-    """재무 지표 크롤링 (기존 방식 유지)"""
+    """재무 지표 크롤링"""
     url = f"https://finance.naver.com/item/main.naver?code={code}"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
     indicators = {"시가총액": "0", "외인소진율": "0%", "PER": "0", "PBR": "0", "EPS": "0", "BPS": "0", "배당수익률": "0%", "주당 배당금": "0", "추정PER": "-", "추정EPS": "-", "거래대금": "0"}
     try:
         res = requests.get(url, headers=headers)
         res.encoding = 'euc-kr'
-        import BeautifulSoup as bs # 내부 임포트
-        from bs4 import BeautifulSoup
         soup = BeautifulSoup(res.text, 'html.parser')
         summary_table = soup.select_one('table.type2.summary')
         if summary_table:
@@ -83,11 +80,14 @@ def get_financial_indicators(code):
 
 def send_email(file_path, success, fail, error_list):
     """이메일 발송"""
-    if not EMAIL_USER or not EMAIL_PASS: return
+    if not EMAIL_USER or not EMAIL_PASS:
+        print("⚠️ [경고] 이메일 설정(Secrets)이 비어있습니다. 메일을 보낼 수 없습니다.")
+        return
+
     msg = MIMEMultipart()
     msg['From'] = EMAIL_USER
     msg['To'] = RECIPIENT_EMAIL
-    msg['Subject'] = f"[📊 주식 보고서] {datetime.now().strftime('%Y-%m-%d')} 수집 완료"
+    msg['Subject'] = f"[📊 주식 보고서] {datetime.now().strftime('%Y-%m-%d')} 수집 결과"
 
     error_text = "\n".join([f"- {err}" for err in error_list[:10]]) if error_list else "없음"
     body_text = (
@@ -110,6 +110,7 @@ def send_email(file_path, success, fail, error_list):
                 part = MIMEApplication(f.read(), _subtype="csv")
                 part.add_header('Content-Disposition', 'attachment', filename=os.path.basename(file_path))
                 msg.attach(part)
+
         context = ssl.create_default_context()
         with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, context=context) as server:
             server.login(EMAIL_USER, EMAIL_PASS)
@@ -122,14 +123,16 @@ def main():
     today = datetime.now().strftime('%Y-%m-%d')
     print(f"🚀 [{today}] 데이터 수집 프로세스 시작")
 
-    # 1. API를 통해 종목 리스트 가져오기 (가장 중요!)
-    stocks = get_stocks_from_url(TARGET_GROUP_CODE)
+    # 1. 종목 리스트 가져오기 (새로운 API 방식)
+    target_url = f"https://api.stock.naver.com/api/stock/v1/stock/industry/49?no={TARGET_GROUP_CODE}"
+    # 주의: API 주소 형식이 바뀔 수 있으므로 기존 방식과 혼용하지 않고 명확히 함
+    stocks = get_stocks_from_url(f"https://stock.naver.com/market/stock/kr/industry/49?no={TARGET_GROUP_CODE}")
     
     if not stocks:
-        print(f"❌ 오류: 종목을 찾지 못했습니다. 업종 번호({TARGET_GROUP_CODE})를 확인하세요.")
+        print(f"❌ 종목을 찾지 못했습니다. 업종 번호를 확인하세요.")
         return
 
-    print(f"✅ {len(stocks)}개 종목 발견. 데이터 수집 시작...")
+    print(f"✅ {len(stocks)}개 종목 발견. 수집 시작...")
     data_list, errors = [], []
 
     for item in stocks:
@@ -152,21 +155,19 @@ def main():
                 "추정PER": ind["추정PER"], "추정EPS": ind["추정EPS"], "PBR": ind["PBR"],
                 "BPS": ind["BPS"], "배당수익률": ind["배당수익률"], "주당 배당금": ind["주당 배당금"]
             })
-            time.sleep(0.3)
+            time.sleep(0.4)
         except Exception as e:
             errors.append(f"{name}({code}): {e}")
 
-    # 2. 결과 저장 (데이터가 있을 때만 실행)
     if data_list:
-        df_final = pd.DataFrame(data_list)
-        df_final.to_csv(CSV_PATH, index=False, encoding='utf-utf-sig')
-        print(f"✅ {len(data_list)}개 종목 파일 저장 완료: {CSV_PATH}")
+        pd.DataFrame(data_list).to_csv(CSV_PATH, index=False, encoding='utf-utf-sig')
+        print(f"✅ {len(data_list)}개 종목 저장 완료: {CSV_PATH}")
     else:
-        print("❌ 수집된 데이터가 없어 파일을 생성하지 않았습니다.")
+        print("❌ 수집된 데이터가 없습니다. 파일이 생성되지 않았습니다.")
 
-    # 3. 메일 발송
     send_email(CSV_PATH, len(data_list), len(errors), errors)
 
 if __name__ == "__main__":
     main()
+
 

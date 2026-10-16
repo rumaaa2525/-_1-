@@ -188,5 +188,6 @@ def main():
     
     send_email(CSV_PATH, len(data_list), len(errors), errors)
 
-if __name__if__ == "__main__":
+if __name__ == "__main__":
     main()
+

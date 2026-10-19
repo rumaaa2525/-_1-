@@ -49,6 +49,11 @@ def collect_and_validate_stocks():
         {"name": "광전자", "code": "017900"},
         {"name": "대주전자재료", "code": "078600"},
         {"name": "솔루엠", "code": "248070"},
+        {"name": "엑스비스", "code": "0011A0"},
+        {"name": "삼성전기우", "code": "009155"},
+        {"name": "빛샘전자", "code": "072950"},
+        {"name": "LK삼양", "code": "225190"},
+        {"name": "파크시스템스", "code": "140860"},
     ]
 
     data_list = []

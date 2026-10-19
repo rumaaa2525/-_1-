@@ -19,7 +19,7 @@ def collect_and_validate_stocks():
         {"name": "롯데에너지머티리얼즈", "code": "020150"},
     ]
 
-    # KRX 전체 종목 상장 정보 가져오기 (시가총액, 상장주식수, 외국인비율 등 포함)
+    # KRX 전체 종목 상장 정보 가져오기
     try:
         krx_df = fdr.StockListing("KRX")
         krx_df["Code"] = krx_df["Code"].astype(str).str.zfill(6)
@@ -75,16 +75,47 @@ def collect_and_validate_stocks():
                 row["등락률(%)"] = None
                 row["상승여부"] = None
 
-            # 3. KRX 상장 정보 매핑 (시가총액, 상장주식수, 외국인비율 등)
+            # 3. KRX 상장 정보 매핑 (대소문자 차이 및 누락 방지 처리)
+            marcap_val = None
+            stocks_val = None
+            foreign_ratio_val = None
+
             if not krx_df.empty and code in krx_df.index:
                 krx_row = krx_df.loc[code]
-                row["시가총액"] = krx_row.get("Marcap", None)
-                row["상장주식수"] = krx_row.get("Stocks", None)
-                row["외국인비율"] = krx_row.get("ForeignRatio", None)
-            else:
-                row["시가총액"] = None
-                row["상장주식수"] = None
-                row["외국인비율"] = None
+                
+                # 시가총액 (대소문자 및 다양한 컬럼명 대응)
+                for col in ["Marcap", "marcap", "MARCAP"]:
+                    if col in krx_row and pd.notna(krx_row[col]):
+                        marcap_val = krx_row[col]
+                        break
+
+                # 상장주식수
+                for col in ["Stocks", "stocks", "STOCKS", "Shares"]:
+                    if col in krx_row and pd.notna(krx_row[col]):
+                        stocks_val = krx_row[col]
+                        break
+
+                # 외국인비율 (데이터셋에 있는 경우)
+                for col in ["ForeignRatio", "foreign_ratio", "Foreign"]:
+                    if col in krx_row and pd.notna(krx_row[col]):
+                        foreign_ratio_val = krx_row[col]
+                        break
+
+            # 시가총액이 없는데 현재가와 상장주식수가 있다면 직접 계산해서 채우기 (현재가 * 상장주식수)
+            if marcap_val is None and current_close and stocks_val:
+                marcap_val = int(current_close * stocks_val)
+
+            row["시가총액"] = int(marcap_val) if marcap_val is not None else None
+            row["상장주식수"] = int(stocks_val) if stocks_val is not None else None
+            
+            # 일별 데이터프레임 내에 외국인 관련 컬럼이 있는지 확인 후 매핑
+            if foreign_ratio_val is None:
+                for col in ["ForeignRatio", "Foreign", "Foreigner"]:
+                    if col in latest_day and pd.notna(latest_day[col]):
+                        foreign_ratio_val = latest_day[col]
+                        break
+
+            row["외국인비율"] = float(foreign_ratio_val) if foreign_ratio_val is not None else None
 
             data_list.append(row)
             
@@ -138,7 +169,7 @@ if __name__ == "__main__":
         body = (
             "안녕하세요, 오늘의 주식 데이터 크롤링 및 검증 결과입니다.\n\n"
             f"상태: {result_msg}\n\n"
-            "핵심 시세 및 시장 지표가 포함된 CSV 파일을 첨부합니다."
+            "시가총액 및 상세 지표가 보완된 CSV 파일을 첨부합니다."
         )
         msg.attach(MIMEText(body, "plain"))
 

@@ -19,12 +19,14 @@ jobs:
 
       - run: python stock_validator.py
         env:
-          MY_EMAIL_SENDER: ${{ secrets.MY_EMAIL_SENDER }}
-          MY_EMAIL_RECEIVER: ${{ secrets.MY_EMAIL_RECEIVER }}
-          MY_EMAIL_PW: ${{ secrets.MY_EMAIL_PW }}
+          # GitHub Secrets 이름과 일치하도록 수정
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
 
       - uses: actions/upload-artifact@v4
         with:
           name: stock-csv
-          path: electronic_equipment_multi.csv
+          # 파이썬 코드에서 저장하는 상세 CSV 파일명과 일치시킴
+          path: electronic_equipment_multi_detailed.csv
 

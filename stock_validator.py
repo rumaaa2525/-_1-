@@ -1,193 +1,137 @@
 import os
 import smtplib
-import time
-import ssl
-import json
-import pandas as pd
-import requests
-from datetime import datetime
-from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from bs4 import BeautifulSoup
+import FinanceDataReader as fdr
+import pandas as pd
 
-# --- [설정 영역] ---
-CSV_PATH = "electronic_equipment_multi.csv"
-TARGET_URL = "https://stock.naver.com/market/stock/kr/industry/49?no=282"
+def collect_and_validate_stocks():
+    # 1. 종목 리스트 정의
+    stocks = [
+        {"name": "삼성전기", "code": "009150"},
+        {"name": "LG이노텍", "code": "011070"},
+        {"name": "HT로보틱스", "code": "396300"},
+        {"name": "대덕전자", "code": "353200"},
+        {"name": "심텍", "code": "222800"},
+        {"name": "롯데에너지머티리얼즈", "code": "020150"},
+    ]
 
-SMTP_SERVER = "smtp.naver.com"
-SMTP_PORT = 465
-EMAIL_USER = os.environ.get("MY_EMAIL_SENDER", "your_naver@naver.com")
-EMAIL_PASS = os.environ.get("MY_EMAIL_PW", "your_app_password")
-RECIPIENT_EMAIL = os.environ.get("MY_EMAIL_RECEIVER", "receiver@naver.com")
+    # 확장 지표 목록: 수집 가능한 지표를 키로 사용
+    extra_metrics = [
+        "Open", "High", "Low", "Close", "Volume",
+        "MarketCap", "Revenue", "OperatingIncome", "NetIncome",
+        "PER", "ROE", "ROA", "DebtRatio"
+    ]
 
-# --- [기능 함수 영역] ---
-
-def get_stocks_from_url(url):
-    """네이버 업종 페이지에서 종목 리스트 추출"""
-    print(f"🌐 업종 페이지 접속 중: {url}")
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-    try:
-        res = requests.get(url, headers=headers)
-        res.encoding = 'utf-8'
-        soup = BeautifulSoup(res.text, 'html.parser')
-        stocks = []
-        links = soup.find_all('a', href=True)
-        for link in links:
-            href = link.get('href')
-            if 'code=' in href:
-                code = href.split('code=')[-1]
-                name = link.text.strip()
-                if name and len(code) == 6 and code.isdigit():
-                    if not any(s['code'] == code for s in stocks):
-                        stocks.append({"name": name, "code": code})
-        return stocks
-    except Exception as e:
-        print(f"❌ 종목 추출 실패: {e}")
-        return []
-
-def get_naver_chart_data(code):
-    """⭐ 사용자님이 가져오신 방식: 네이버 차트 API로 시세 데이터 직접 추출"""
-    # 최근 5일치 데이터를 가져오기 위해 날짜 설정
-    end_date = datetime.now().strftime('%Y%m%d')
-    start_date = (datetime.now() - pd.Timedelta(days=10)).strftime('%Y%m%d')
-    
-    url = f"https://m.stock.naver.com/front-api/external/chart/domestic/info?symbol={code}&requestType=1&startTime={start_date}&endTime={end_date}&timeframe=day"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-    
-    try:
-        res = requests.get(url, headers=headers)
-        res.raise_for_status()
-        data = res.json()
-        
-        # API 응답 구조에서 데이터 추출 (data['data'] 안에 리스트가 들어있음)
-        chart_data = data.get('data', [])
-        if not chart_data:
-            return None, None
-            
-        # 가장 최근(마지막) 데이터와 그 전날 데이터 추출
-        latest = chart_data[-1]
-        prev = chart_data[-2]
-        
-        return latest, prev
-    except Exception as e:
-        print(f"  [!] 시세 API 오류({code}): {e}")
-        return None, None
-
-def get_financial_indicators(code):
-    """재무 지표 크롤링 (기존 방식 유지)"""
-    url = f"https://finance.naver.com/item/main.naver?code={code}"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-    indicators = {"시가총액": "0", "외인소진율": "0%", "PER": "0", "PBR": "0", "EPS": "0", "BPS": "0", "배당수익률": "0%", "주당 배당금": "0", "추정PER": "-", "추정EPS": "-", "거래대금": "0"}
-    try:
-        res = requests.get(url, headers=headers)
-        res.encoding = 'euc-kr'
-        soup = BeautifulSoup(res.text, 'html.parser')
-        summary_table = soup.select_one('table.type2.summary')
-        if summary_table:
-            for row in summary_table.select('tr'):
-                cols = row.select('th, td')
-                if len(cols) >= 2:
-                    label, value = cols[0].text.strip(), cols[1].text.strip().replace(',', '')
-                    if '시가총액' in label: indicators["시가총액"] = value
-                    elif 'PER' in label: indicators["PER"] = value
-                    elif 'PBR' in label: indicators["PBR"] = value
-                    elif 'EPS' in label: indicators["EPS"] = value
-                    elif 'BPS' in label: indicators["BPS"] = value
-                    elif '배당수익률' in label: indicators["배당수익률"] = value
-                    elif '주당배당금' in label: indicators["주당 배당금"] = value
-        foreign_th = soup.find('th', text='외국인보유비율')
-        if foreign_th: indicators["외인소진율"] = foreign_th.find_next_sibling('td').text.strip()
-    except: pass
-    return indicators
-
-def send_email(file_path, success, fail, error_list):
-    """이메일 발송"""
-    if not EMAIL_USER or not EMAIL_PASS: return
-    msg = MIMEMultipart()
-    msg['From'] = EMAIL_USER
-    msg['To'] = RECIPIENT_EMAIL
-    msg['Subject'] = f"[📊 주식 보고서] {datetime.now().strftime('%Y-%m-%d')} 수집 완료"
-
-    error_text = "\n".join([f"- {err}" for err in error_list[:10]]) if error_list else "없음"
-    body_text = (
-        f"안녕하세요, 자동 수집 시스템입니다.\n\n"
-        f"금일 주식 데이터 수집 결과 보고드립니다.\n\n"
-        f"[수집 요약]\n"
-        f"- 수집 일자: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"- 총 대상 종목: {success + fail}개\n"
-        f"- 수집 성공: {success}개\n"
-        f"- 수집 실패: {fail}개\n\n"
-        f"[상세 오류 내역]\n"
-        f"{error_text}\n\n"
-        f"상세 데이터는 첨부된 CSV 파일을 확인해 주세요."
-    )
-    msg.attach(MIMEText(body_text, 'plain'))
-
-    try:
-        if os.path.exists(file_path):
-            with open(file_path, "rb") as f:
-                part = MIMEApplication(f.read(), _subtype="csv")
-                part.add_header('Content-Disposition', 'attachment', filename=os.path.basename(file_path))
-                msg.attach(part)
-        context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, context=context) as server:
-            server.login(EMAIL_USER, EMAIL_PASS)
-            server.sendmail(EMAIL_USER, RECIPIENT_EMAIL, msg.as_string())
-        print("📧 이메일 전송 성공!")
-    except Exception as e:
-        print(f"📧 이메일 전송 실패: {e}")
-
-def main():
-    today = datetime.now().strftime('%Y-%m-%d')
-    print(f"🚀 [{today}] 데이터 수집 프로세스 시작 (네이버 API 통합 버전)")
-
-    stocks = get_stocks_from_url(TARGET_URL)
-    if not stocks:
-        print("❌ 종목을 찾지 못했습니다.")
-        return
-
-    print(f"✅ {len(stocks)}개 종목 발견. 수집을 시작합니다.")
-    data_list, errors = [], []
+    data_list = []
+    errors = []
 
     for item in stocks:
-        name, code = item["name"], str(item["code"]).zfill(6)
-        print(f"  - {name}({code}) 수집 중...")
+        name = item["name"]
+        code = str(item["code"]).zfill(6)
+
+        row = {"종목명": name, "종목코드": code}
         try:
-            # ⭐ 핵심: 사용자님의 코드를 활용한 API 방식 호출
-            latest, prev = get_naver_chart_data(code)
-            
-            if not latest or not prev:
-                raise ValueError("차트 데이터를 가져올 수 없습니다.")
+            df = fdr.DataReader(code, "2026-01-01")
 
-            # 재무 데이터 가져오기
-            ind = get_financial_indicators(code)
+            if df is None or df.empty:
+                raise ValueError("데이터 없음")
 
-            data_list.append({
-                "수집 날짜": today, "종목코드": code, "종목명": name,
-                "기준가": int(prev['close']), # API 필드명 확인 필요 (보통 소문자)
-                "시가": int(latest['open']),
-                "고가": int(latest['high']),
-                "저가": int(latest['low']),
-                "현재가": int(latest['close']),
-                "거래량": int(latest['volume']),
-                "거래대금": int(latest['volume'] * latest['close']),
-                "52주 최고": int(max([d.get('high', 0) for d in [prev, latest] if d])), # 단순화
-                "시가총액": ind["시가총액"],
-                "외인소진율": ind["외인소진율"], "PER": ind["PER"], "EPS": ind["EPS"],
-                "추정PER": ind["추정PER"], "추정EPS": ind["추정EPS"], "PBR": ind["PBR"],
-                "BPS": ind["BPS"], "배당수익률": ind["배당수익률"], "주당 배당금": ind["주당 배당금"]
-            })
-            time.sleep(0.4)
+            latest_day = df.iloc[-1]
+            prev_day = df.iloc[-2]
+
+            # 기본 가격 정보
+            current_close = latest_day.get("Close", None)
+            price = int(current_close) if current_close is not None else None
+            row["현재가"] = price
+
+            # 등락률 계산
+            prev_close = prev_day.get("Close", None)
+            if current_close is not None and prev_close is not None and prev_close != 0:
+                change = round(((current_close - prev_close) / prev_close) * 100, 2)
+                row["등락률(%)"] = change
+                row["상승여부"] = change > 0
+            else:
+                row["등락률(%)"] = None
+                row["상승여부"] = None
+
+            # 확장 지표 수집 시도
+            for met in extra_metrics:
+                value = None
+                if met in df.columns:
+                    value = df.iloc[-1].get(met)
+                else:
+                    value = float("nan")
+                row[met] = value
+
+            data_list.append(row)
         except Exception as e:
-            errors.append(f"{name}({code}): {e}")
+            errors.append(f"{name}({code}) 수집 실패: {e}")
 
-    if data_list:
-        pd.DataFrame(data_list).to_csv(CSV_PATH, index=False, encoding='utf-utf-sig')
-        print(f"✅ {len(data_list)}개 종목 저장 완료: {CSV_PATH}")
-    
-    send_email(CSV_PATH, len(data_list), len(errors), errors)
+    # 3. 새로운 결과로 CSV 파일 생성
+    df_result = pd.DataFrame(data_list)
+    df_result.to_csv(
+        "electronic_equipment_multi.csv", index=False, encoding="utf-8-sig"
+    )
 
+    # 4. 검증 체크리스트 수행
+    expected_count = 6
+    actual_count = len(df_result)
+    if actual_count != expected_count:
+        errors.append(f"수집 건수 불일치: 기대({expected_count}) != 실제({actual_count})")
+
+    missing_count = df_result.isnull().sum().sum()
+    if missing_count > 0:
+        errors.append(f"결측치 발견: {missing_count}건")
+
+    # 상하한가(±30%) 초과 검증
+    if not df_result.empty and "등락률(%)" in df_result.columns:
+        invalid_changes = df_result[abs(df_result["등락률(%)"]) > 30]
+        if not invalid_changes.empty:
+            errors.append("가격제한폭(±30%) 초과 종목 발견")
+
+    # 5. 상태 메시지 반환
+    if errors:
+        status_message = "[경고] 오류 발생: " + ", ".join(errors)
+        is_error = True
+    else:
+        status_message = f"[정상] {actual_count}/{expected_count} 수집, 결측 0건"
+        is_error = False
+
+    return status_message, is_error
+
+# --- [실행부] 수집/검증 및 메일 발송 ---
 if __name__ == "__main__":
-    main()
+    result_msg, has_error = collect_and_validate_stocks()
+    print("=== 데이터 수집 및 검증 결과 ===")
+    print(result_msg)
+
+    # 메일 발송 설정 (환경 변수 이름 변경 반영)
+    try:
+        msg = MIMEMultipart()
+
+        # 새 이름으로 읽기
+        EMAIL_SENDER = os.environ.get("EMAIL_SENDER","")
+        EMAIL_RECEIVER = os.environ.get("EMAIL_RECEIVER","")
+        EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD", "")
+
+        msg["From"] = EMAIL_SENDER
+        msg["To"] = EMAIL_RECEIVER
+        msg["Subject"] = f"주식 데이터 수집 검증 보고 - {result_msg}"
+
+        body = (
+            "안녕하세요, 오늘의 주식 크롤링 및 검증 결과입니다.\n\n"
+            f"상태: {result_msg}\n\n"
+            "새로운 종목 데이터가 정상적으로 갱신되었습니다."
+        )
+        msg.attach(MIMEText(body, "plain"))
+
+        server = smtplib.SMTP_SSL("smtp.naver.com", 465)
+        server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+        server.sendmail(EMAIL_SENDER, EMAIL_RECEIVER, msg.as_string())
+        server.quit()
+        print("[메일 발송 성공] 갱신된 결과 메일이 전송되었습니다.")
+
+    except Exception as e:
+        print(f"[메일 발송 실패] 사유: {e}")
 

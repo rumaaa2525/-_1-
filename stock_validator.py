@@ -17,7 +17,7 @@ def collect_and_validate_stocks():
         {"name": "롯데에너지머티리얼즈", "code": "020150"},
     ]
 
-    # KRX 전체 종목 상장 정보 (시가총액, PER, PBR, ROE, 배당수익률 등 포함) 미리 가져오기
+    # KRX 전체 종목 상장 정보 (시가총액, PER, PBR, 외국인비율 등 포함) 미리 가져오기
     try:
         krx_df = fdr.StockListing("KRX")
         # 종목코드를 6자리 문자열로 패딩
@@ -56,7 +56,7 @@ def collect_and_validate_stocks():
             prev_volume = prev_day.get("Volume", None)
             row["전일거래량"] = int(prev_volume) if prev_volume is not None else None
 
-            # 거래대금 (종가 * 거래량 대략 계산 또는 컬럼 존재 시 활용)
+            # 거래대금
             if "Value" in latest_day:
                 row["거래대금"] = int(latest_day.get("Value", 0))
             elif current_close and row["거래량"]:
@@ -91,8 +91,7 @@ def collect_and_validate_stocks():
                 row["배당수익률"] = None
                 row["외국인비율"] = None
 
-            # 추가 재무제표 항목 (매출액, 영업이익, 당기순이익, ROE, ROA 등은 기본 API에서 제한될 수 있으므로 예외 처리 동반)
-            # 필요에 따라 OpenDart나 별도 재무 크롤링 연동 가능 영역
+            # 추가 재무제표 항목 매핑 시도
             for metric in ["매출액", "영업이익", "당기순이익", "자산총계", "부채총계", "유보율", "ROE", "ROA", "주당순이익", "매출액증가율", "영업이익증가율", "보통주배당금"]:
                 row[metric] = krx_row.get(metric, None) if ('krx_row' in locals() and metric in krx_row) else None
 
@@ -134,13 +133,13 @@ if __name__ == "__main__":
     print("=== 데이터 수집 및 검증 결과 ===")
     print(result_msg)
 
-    # 메일 발송 설정
+    # 메일 발송 설정 (GitHub Secrets 이름인 EMAIL_USER, RECIPIENT_EMAIL, EMAIL_PASS 반영)
     try:
         msg = MIMEMultipart()
 
-        EMAIL_SENDER = os.environ.get("EMAIL_SENDER", "")
-        EMAIL_RECEIVER = os.environ.get("EMAIL_RECEIVER", "")
-        EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD", "")
+        EMAIL_SENDER = os.environ.get("EMAIL_USER", "")
+        EMAIL_RECEIVER = os.environ.get("RECIPIENT_EMAIL", "")
+        EMAIL_PASSWORD = os.environ.get("EMAIL_PASS", "")
 
         msg["From"] = EMAIL_SENDER
         msg["To"] = EMAIL_RECEIVER
@@ -149,19 +148,9 @@ if __name__ == "__main__":
         body = (
             "안녕하세요, 오늘의 주식 확장 지표 크롤링 및 검증 결과입니다.\n\n"
             f"상태: {result_msg}\n\n"
-            "요청하신 사진 속 주요 지표(시가, 고가, 저가, 거래량, 시가총액, PER, PBR, 외국인비율 등)가 포함된 CSV 파일이 갱신되었습니다."
+            "요청하신 사진 속 주요 지표가 포함된 CSV 파일이 갱신되었습니다."
         )
         msg.attach(MIMEText(body, "plain"))
-
-        # 필요시 수집된 CSV 파일을 이메일에 첨부하고 싶다면 아래 주석을 해제하세요.
-        # from email.mime.base import MIMEBase
-        # from email import encoders
-        # with open(attached_file, "rb") as f:
-        #     part = MIMEBase("application", "octet-stream")
-        #     part.set_payload(f.read())
-        # encoders.encode_base64(part)
-        # part.add_header("Content-Disposition", f"attachment; filename= {attached_file}")
-        # msg.attach(part)
 
         server = smtplib.SMTP_SSL("smtp.naver.com", 465)
         server.login(EMAIL_SENDER, EMAIL_PASSWORD)

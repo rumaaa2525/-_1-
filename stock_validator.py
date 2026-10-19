@@ -4,9 +4,31 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
-import FinanceDataReader as fdr
 import pandas as pd
 import numpy as np
+import requests
+
+# ===================== 네이버 API 관련 설정 =====================
+API = "https://m.stock.naver.com/api/stock"
+SESSION = requests.Session()
+SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Referer": "https://m.stock.naver.com/",
+})
+
+def flatten_finance(code: str, freq: str, js: dict) -> list:
+    fi = (js or {}).get("financeInfo", {})
+    titles = {t.get("key"): t.get("title") for t in fi.get("trTitleList", [])}
+    cons = {t.get("key"): t.get("isConsensus") for t in fi.get("trTitleList", [])}
+    out = []
+    for row in fi.get("rowList", []):
+        for k, cell in (row.get("columns") or {}).items():
+            out.append({"종목코드": code, "주기": freq, "기간": titles.get(k, k),
+                        "컨센서스": cons.get(k), "항목": row.get("title"),
+                        "값": (cell or {}).get("value")})
+    return out
+
 
 def collect_and_validate_stocks():
     # 1. 종목 리스트 정의
@@ -19,15 +41,8 @@ def collect_and_validate_stocks():
         {"name": "롯데에너지머티리얼즈", "code": "020150"},
     ]
 
-    # KRX 전체 종목 상장 정보 가져오기
-    try:
-        krx_df = fdr.StockListing("KRX")
-        krx_df["Code"] = krx_df["Code"].astype(str).str.zfill(6)
-        krx_df = krx_df.set_index("Code")
-    except Exception as e:
-        krx_df = pd.DataFrame()
-
     data_list = []
+    fin_rows = []
     errors = []
 
     for item in stocks:
@@ -36,86 +51,60 @@ def collect_and_validate_stocks():
 
         row = {"종목명": name, "종목코드": code}
         try:
-            # 2. 일별 시세 데이터 수집
-            df = fdr.DataReader(code, "2026-01-01")
-
-            if df is None or df.empty:
-                raise ValueError("일별 시세 데이터 없음")
-
-            latest_day = df.iloc[-1]
-            prev_day = df.iloc[-2] if len(df) > 1 else latest_day
-
-            # 가격 및 거래량 지표 매칭
-            row["시가"] = int(latest_day.get("Open", 0)) if pd.notna(latest_day.get("Open")) else None
-            row["고가"] = int(latest_day.get("High", 0)) if pd.notna(latest_day.get("High")) else None
-            row["저가"] = int(latest_day.get("Low", 0)) if pd.notna(latest_day.get("Low")) else None
-            current_close = latest_day.get("Close", None)
-            row["현재가(종가)"] = int(current_close) if current_close is not None else None
-            row["거래량"] = int(latest_day.get("Volume", 0)) if pd.notna(latest_day.get("Volume")) else None
+            # 네이버 모바일 API 호출 (기본 정보 + 통합 정보 + 재무 정보)
+            r_basic = SESSION.get(f"{API}/{code}/basic", timeout=15)
+            r_integ = SESSION.get(f"{API}/{code}/integration", timeout=15)
             
-            # 전일거래량
-            prev_volume = prev_day.get("Volume", None)
-            row["전일거래량"] = int(prev_volume) if prev_volume is not None else None
+            if r_basic.status_code != 200 or r_integ.status_code != 200:
+                raise ValueError("네이버 API 응답 오류")
 
-            # 거래대금
-            if "Value" in latest_day:
-                row["거래대금"] = int(latest_day.get("Value", 0))
-            elif current_close and row["거래량"]:
-                row["거래대금"] = int(current_close * row["거래량"])
-            else:
-                row["거래대금"] = None
+            basic = r_basic.json()
+            integ = r_integ.json()
 
-            # 등락률 계산
-            prev_close = prev_day.get("Close", None)
-            if current_close is not None and prev_close is not None and prev_close != 0:
-                change = round(((current_close - prev_close) / prev_close) * 100, 2)
-                row["등락률(%)"] = change
-                row["상승여부"] = change > 0
-            else:
-                row["등락률(%)"] = None
-                row["상승여부"] = None
+            # 기본 가격 및 등락 정보
+            current_close = basic.get("closePrice")
+            prev_close = basic.get("previousClosePrice")
+            
+            # 숫자형 변환 처리 (쉼표 제거 등)
+            def clean_num(val):
+                if val is None:
+                    return None
+                if isinstance(val, (int, float)):
+                    return val
+                try:
+                    return float(str(val).replace(",", ""))
+                except ValueError:
+                    return None
 
-            # 3. KRX 상장 정보 매핑 (대소문자 차이 및 누락 방지 처리)
-            marcap_val = None
-            stocks_val = None
-            foreign_ratio_val = None
+            row["현재가(종가)"] = clean_num(current_close)
+            row["전일대비"] = clean_num(basic.get("compareToPreviousClosePrice"))
+            
+            fluctuations_ratio = clean_num(basic.get("fluctuationsRatio"))
+            row["등락률(%)"] = fluctuations_ratio
+            row["상승여부"] = fluctuations_ratio > 0 if fluctuations_ratio is not None else None
 
-            if not krx_df.empty and code in krx_df.index:
-                krx_row = krx_df.loc[code]
+            # 통합 정보(totalInfos)에서 시가, 고가, 저가, 거래량, 시가총액, PER, PBR, 외국인비율 등 일괄 추출
+            for it in integ.get("totalInfos", []):
+                key = it.get("key")
+                val = it.get("value")
+                # 보기 편한 주요 키 매칭 및 저장
+                if key in ["openPrice", "시가"]:
+                    row["시가"] = clean_num(val)
+                elif key in ["highPrice", "고가"]:
+                    row["고가"] = clean_num(val)
+                elif key in ["lowPrice", "저가"]:
+                    row["저가"] = clean_num(val)
+                elif key in ["accumulatedTradingVolume", "거래량"]:
+                    row["거래량"] = clean_num(val)
+                elif key in ["accumulatedTradingValue", "거래대금"]:
+                    row["거래대금"] = clean_num(val)
+                elif key in ["marketCapitalization", "시가총액"]:
+                    row["시가총액"] = val  # 원본 문자열 또는 숫자 유지
+                elif key in ["foreignRatio", "외국인비율"]:
+                    row["외국인비율"] = val
                 
-                # 시가총액 (대소문자 및 다양한 컬럼명 대응)
-                for col in ["Marcap", "marcap", "MARCAP"]:
-                    if col in krx_row and pd.notna(krx_row[col]):
-                        marcap_val = krx_row[col]
-                        break
-
-                # 상장주식수
-                for col in ["Stocks", "stocks", "STOCKS", "Shares"]:
-                    if col in krx_row and pd.notna(krx_row[col]):
-                        stocks_val = krx_row[col]
-                        break
-
-                # 외국인비율 (데이터셋에 있는 경우)
-                for col in ["ForeignRatio", "foreign_ratio", "Foreign"]:
-                    if col in krx_row and pd.notna(krx_row[col]):
-                        foreign_ratio_val = krx_row[col]
-                        break
-
-            # 시가총액이 없는데 현재가와 상장주식수가 있다면 직접 계산해서 채우기 (현재가 * 상장주식수)
-            if marcap_val is None and current_close and stocks_val:
-                marcap_val = int(current_close * stocks_val)
-
-            row["시가총액"] = int(marcap_val) if marcap_val is not None else None
-            row["상장주식수"] = int(stocks_val) if stocks_val is not None else None
-            
-            # 일별 데이터프레임 내에 외국인 관련 컬럼이 있는지 확인 후 매핑
-            if foreign_ratio_val is None:
-                for col in ["ForeignRatio", "Foreign", "Foreigner"]:
-                    if col in latest_day and pd.notna(latest_day[col]):
-                        foreign_ratio_val = latest_day[col]
-                        break
-
-            row["외국인비율"] = float(foreign_ratio_val) if foreign_ratio_val is not None else None
+                # 그 외 모든 지표도 동적으로 담기
+                row[key] = val
 
             data_list.append(row)
             
@@ -134,19 +123,23 @@ def collect_and_validate_stocks():
         errors.append(f"수집 건수 불일치: 기대({expected_count}) != 실제({actual_count})")
 
     if not df_result.empty and "등락률(%)" in df_result.columns:
-        invalid_changes = df_result[df_result["등락률(%)"].notna() & (abs(df_result["등락률(%)"]) > 30)]
-        if not invalid_changes.empty:
-            errors.append("가격제한폭(±30%) 초과 종목 발견")
+        # 등락률 기준으로 상하한가(±30%) 초과 검증
+        valid_df = df_result[df_result["등락률(%)"].notna()]
+        if not valid_df.empty:
+            invalid_changes = valid_df[abs(valid_df["등락률(%)"]) > 30]
+            if not invalid_changes.empty:
+                errors.append("가격제한폭(±30%) 초과 종목 발견")
 
     # 6. 상태 메시지 반환
     if errors:
         status_message = "[경고] 오류 발생: " + ", ".join(errors)
         is_error = True
     else:
-        status_message = f"[정상] {actual_count}/{expected_count} 종목 핵심 지표 수집 완료"
+        status_message = f"[정상] {actual_count}/{expected_count} 종목 상세 지표 수집 완료"
         is_error = False
 
     return status_message, is_error, csv_filename
+
 
 # --- [실행부] 수집/검증 및 메일 발송 ---
 if __name__ == "__main__":
@@ -164,12 +157,12 @@ if __name__ == "__main__":
 
         msg["From"] = EMAIL_SENDER
         msg["To"] = EMAIL_RECEIVER
-        msg["Subject"] = f"주식 핵심 데이터 수집 및 검증 보고 - {result_msg}"
+        msg["Subject"] = f"주식 상세 데이터 수집 및 검증 보고 - {result_msg}"
 
         body = (
-            "안녕하세요, 오늘의 주식 데이터 크롤링 및 검증 결과입니다.\n\n"
+            "안녕하세요, 오늘의 주식 확장 지표 크롤링 및 검증 결과입니다.\n\n"
             f"상태: {result_msg}\n\n"
-            "시가총액 및 상세 지표가 보완된 CSV 파일을 첨부합니다."
+            "시가총액, 외국인비율 및 상세 지표가 포함된 CSV 파일을 첨부합니다."
         )
         msg.attach(MIMEText(body, "plain"))
 

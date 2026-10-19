@@ -2,3 +2,4 @@ finance-datareader
 pandas
 requests
 beautifulsoup4
+numpy

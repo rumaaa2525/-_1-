@@ -2,6 +2,8 @@ import os
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 import FinanceDataReader as fdr
 import pandas as pd
 import numpy as np
@@ -17,10 +19,9 @@ def collect_and_validate_stocks():
         {"name": "롯데에너지머티리얼즈", "code": "020150"},
     ]
 
-    # KRX 전체 종목 상장 정보 (시가총액, PER, PBR, 외국인비율 등 포함) 미리 가져오기
+    # KRX 전체 종목 상장 정보 가져오기
     try:
         krx_df = fdr.StockListing("KRX")
-        # 종목코드를 6자리 문자열로 패딩
         krx_df["Code"] = krx_df["Code"].astype(str).str.zfill(6)
         krx_df = krx_df.set_index("Code")
     except Exception as e:
@@ -35,7 +36,7 @@ def collect_and_validate_stocks():
 
         row = {"종목명": name, "종목코드": code}
         try:
-            # 2. 일별 시세 데이터 수집 (Open, High, Low, Close, Volume 등)
+            # 2. 일별 시세 데이터 수집
             df = fdr.DataReader(code, "2026-01-01")
 
             if df is None or df.empty:
@@ -44,7 +45,7 @@ def collect_and_validate_stocks():
             latest_day = df.iloc[-1]
             prev_day = df.iloc[-2] if len(df) > 1 else latest_day
 
-            # 기본 가격 및 거래 정보 (사진 속 항목 매칭)
+            # 기본 가격 및 거래 정보
             row["시가"] = int(latest_day.get("Open", 0)) if pd.notna(latest_day.get("Open")) else None
             row["고가"] = int(latest_day.get("High", 0)) if pd.notna(latest_day.get("High")) else None
             row["저가"] = int(latest_day.get("Low", 0)) if pd.notna(latest_day.get("Low")) else None
@@ -74,7 +75,7 @@ def collect_and_validate_stocks():
                 row["등락률(%)"] = None
                 row["상승여부"] = None
 
-            # 3. KRX 상장 정보 및 재무 지표 매핑 (시가총액, PER, PBR, 외국인비율 등 사진 속 항목)
+            # 3. KRX 상장 정보 및 재무 지표 매핑
             if not krx_df.empty and code in krx_df.index:
                 krx_row = krx_df.loc[code]
                 row["시가총액"] = krx_row.get("Marcap", None)
@@ -91,7 +92,7 @@ def collect_and_validate_stocks():
                 row["배당수익률"] = None
                 row["외국인비율"] = None
 
-            # 추가 재무제표 항목 매핑 시도
+            # 추가 재무제표 항목
             for metric in ["매출액", "영업이익", "당기순이익", "자산총계", "부채총계", "유보율", "ROE", "ROA", "주당순이익", "매출액증가율", "영업이익증가율", "보통주배당금"]:
                 row[metric] = krx_row.get(metric, None) if ('krx_row' in locals() and metric in krx_row) else None
 
@@ -105,13 +106,12 @@ def collect_and_validate_stocks():
     csv_filename = "electronic_equipment_multi_detailed.csv"
     df_result.to_csv(csv_filename, index=False, encoding="utf-8-sig")
 
-    # 5. 검증 체크리스트 수행
+    # 5. 검증 체크리스트
     expected_count = len(stocks)
     actual_count = len(df_result)
     if actual_count != expected_count:
         errors.append(f"수집 건수 불일치: 기대({expected_count}) != 실제({actual_count})")
 
-    # 상하한가(±30%) 초과 검증
     if not df_result.empty and "등락률(%)" in df_result.columns:
         invalid_changes = df_result[df_result["등락률(%)"].notna() & (abs(df_result["등락률(%)"]) > 30)]
         if not invalid_changes.empty:
@@ -133,7 +133,7 @@ if __name__ == "__main__":
     print("=== 데이터 수집 및 검증 결과 ===")
     print(result_msg)
 
-    # 메일 발송 설정 (GitHub Secrets 이름인 EMAIL_USER, RECIPIENT_EMAIL, EMAIL_PASS 반영)
+    # 메일 발송 설정
     try:
         msg = MIMEMultipart()
 
@@ -148,15 +148,26 @@ if __name__ == "__main__":
         body = (
             "안녕하세요, 오늘의 주식 확장 지표 크롤링 및 검증 결과입니다.\n\n"
             f"상태: {result_msg}\n\n"
-            "요청하신 사진 속 주요 지표가 포함된 CSV 파일이 갱신되었습니다."
+            "요청하신 주요 지표가 포함된 CSV 파일을 첨부합니다."
         )
         msg.attach(MIMEText(body, "plain"))
+
+        # [수정 포인트] CSV 파일 이메일 첨부 구문
+        if os.path.exists(attached_file):
+            with open(attached_file, "rb") as f:
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(f.read())
+            encoders.encode_base64(part)
+            # 이메일 첨부 파일 이름 설정
+            part.add_header("Content-Disposition", f"attachment; filename={attached_file}")
+            msg.attach(part)
+            print(f"[{attached_file}] 파일이 메일에 첨부되었습니다.")
 
         server = smtplib.SMTP_SSL("smtp.naver.com", 465)
         server.login(EMAIL_SENDER, EMAIL_PASSWORD)
         server.sendmail(EMAIL_SENDER, EMAIL_RECEIVER, msg.as_string())
         server.quit()
-        print("[메일 발송 성공] 갱신된 결과 메일이 전송되었습니다.")
+        print("[메일 발송 성공] CSV 파일이 첨부된 갱신 결과 메일이 전송되었습니다.")
 
     except Exception as e:
         print(f"[메일 발송 실패] 사유: {e}")

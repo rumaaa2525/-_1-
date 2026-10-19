@@ -19,7 +19,7 @@ def collect_and_validate_stocks():
         {"name": "롯데에너지머티리얼즈", "code": "020150"},
     ]
 
-    # KRX 전체 종목 상장 정보 가져오기
+    # KRX 전체 종목 상장 정보 가져오기 (시가총액, 상장주식수, 외국인비율 등 포함)
     try:
         krx_df = fdr.StockListing("KRX")
         krx_df["Code"] = krx_df["Code"].astype(str).str.zfill(6)
@@ -45,7 +45,7 @@ def collect_and_validate_stocks():
             latest_day = df.iloc[-1]
             prev_day = df.iloc[-2] if len(df) > 1 else latest_day
 
-            # 기본 가격 및 거래 정보
+            # 가격 및 거래량 지표 매칭
             row["시가"] = int(latest_day.get("Open", 0)) if pd.notna(latest_day.get("Open")) else None
             row["고가"] = int(latest_day.get("High", 0)) if pd.notna(latest_day.get("High")) else None
             row["저가"] = int(latest_day.get("Low", 0)) if pd.notna(latest_day.get("Low")) else None
@@ -75,26 +75,16 @@ def collect_and_validate_stocks():
                 row["등락률(%)"] = None
                 row["상승여부"] = None
 
-            # 3. KRX 상장 정보 및 재무 지표 매핑
+            # 3. KRX 상장 정보 매핑 (시가총액, 상장주식수, 외국인비율 등)
             if not krx_df.empty and code in krx_df.index:
                 krx_row = krx_df.loc[code]
                 row["시가총액"] = krx_row.get("Marcap", None)
                 row["상장주식수"] = krx_row.get("Stocks", None)
-                row["PER"] = krx_row.get("PER", None)
-                row["PBR"] = krx_row.get("PBR", None)
-                row["배당수익률"] = krx_row.get("Dividend", None)
                 row["외국인비율"] = krx_row.get("ForeignRatio", None)
             else:
                 row["시가총액"] = None
                 row["상장주식수"] = None
-                row["PER"] = None
-                row["PBR"] = None
-                row["배당수익률"] = None
                 row["외국인비율"] = None
-
-            # 추가 재무제표 항목
-            for metric in ["매출액", "영업이익", "당기순이익", "자산총계", "부채총계", "유보율", "ROE", "ROA", "주당순이익", "매출액증가율", "영업이익증가율", "보통주배당금"]:
-                row[metric] = krx_row.get(metric, None) if ('krx_row' in locals() and metric in krx_row) else None
 
             data_list.append(row)
             
@@ -122,7 +112,7 @@ def collect_and_validate_stocks():
         status_message = "[경고] 오류 발생: " + ", ".join(errors)
         is_error = True
     else:
-        status_message = f"[정상] {actual_count}/{expected_count} 종목 확장 지표 수집 완료"
+        status_message = f"[정상] {actual_count}/{expected_count} 종목 핵심 지표 수집 완료"
         is_error = False
 
     return status_message, is_error, csv_filename
@@ -143,22 +133,21 @@ if __name__ == "__main__":
 
         msg["From"] = EMAIL_SENDER
         msg["To"] = EMAIL_RECEIVER
-        msg["Subject"] = f"주식 상세 데이터 수집 및 검증 보고 - {result_msg}"
+        msg["Subject"] = f"주식 핵심 데이터 수집 및 검증 보고 - {result_msg}"
 
         body = (
-            "안녕하세요, 오늘의 주식 확장 지표 크롤링 및 검증 결과입니다.\n\n"
+            "안녕하세요, 오늘의 주식 데이터 크롤링 및 검증 결과입니다.\n\n"
             f"상태: {result_msg}\n\n"
-            "요청하신 주요 지표가 포함된 CSV 파일을 첨부합니다."
+            "핵심 시세 및 시장 지표가 포함된 CSV 파일을 첨부합니다."
         )
         msg.attach(MIMEText(body, "plain"))
 
-        # [수정 포인트] CSV 파일 이메일 첨부 구문
+        # CSV 파일 첨부
         if os.path.exists(attached_file):
             with open(attached_file, "rb") as f:
                 part = MIMEBase("application", "octet-stream")
                 part.set_payload(f.read())
             encoders.encode_base64(part)
-            # 이메일 첨부 파일 이름 설정
             part.add_header("Content-Disposition", f"attachment; filename={attached_file}")
             msg.attach(part)
             print(f"[{attached_file}] 파일이 메일에 첨부되었습니다.")
